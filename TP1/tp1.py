@@ -237,149 +237,285 @@ def punto2(ruta_lenta, ruta_rapida):
 # =============================================================================
 #  PUNTO 3 — FFT de las vocales (un período vs. varios períodos)
 # =============================================================================
+
+def estimar_f0_robusto(señal, fs, f_min=60, f_max=400):
+    """
+    Estima F0 como la mediana sobre ventanas de 30 ms solapadas.
+    Más robusto que usar la señal completa de una vez, porque promedia
+    pequeñas variaciones de tono a lo largo de la vocal.
+    """
+    win = int(0.03 * fs)
+    hop = win // 2
+    f0s = []
+    for s in range(0, len(señal) - win, hop):
+        chunk = señal[s : s + win]
+        corr = np.correlate(chunk, chunk, mode="full")[len(chunk) - 1 :]
+        corr /= corr[0]
+        mn, mx = int(fs / f_max), int(fs / f_min)
+        if mx >= len(corr):
+            continue
+        lag = np.argmax(corr[mn:mx]) + mn
+        f0s.append(fs / lag)
+    return float(np.median(f0s)) if f0s else 150.0
+
+
 def fft_segmento(señal, fs, t_ini, t_fin):
+    """FFT con ventana de Hanning sobre el segmento completo (varios períodos)."""
     n_ini, n_fin = tiempo_a_muestras(t_ini, t_fin, fs)
     seg = señal[n_ini:n_fin]
     N = len(seg)
-    ventana = np.hanning(N)
-    Y = np.abs(fft(seg * ventana))[:N // 2]
+    Y = np.abs(fft(seg * np.hanning(N)))[:N // 2]
     freqs = fftfreq(N, 1 / fs)[:N // 2]
     return freqs, Y
 
 
-def un_periodo(señal, fs, t_ini, T0_s):
-    """Devuelve el segmento de exactamente un período."""
+def fft_un_periodo(señal, fs, t_ini, f0_hz):
+    """FFT de exactamente un período, centrado en t_ini."""
     n_ini = int(t_ini * fs)
-    n_fin = n_ini + int(T0_s * fs)
-    seg = señal[n_ini:n_fin]
+    n_per = int(fs / f0_hz)
+    seg = señal[n_ini : n_ini + n_per]
     N = len(seg)
-    ventana = np.hanning(N)
-    Y = np.abs(fft(seg * ventana))[:N // 2]
+    Y = np.abs(fft(seg * np.hanning(N)))[:N // 2]
     freqs = fftfreq(N, 1 / fs)[:N // 2]
     return freqs, Y
 
 
-def hallar_formantes(freqs, magnitudes, n_formantes=3, f_min=200, f_max=4000):
+def hallar_formantes(freqs, magnitudes, f0_hz, n_formantes=3, f_min=300, f_max=4000):
     """
     Estima los formantes buscando picos en la envolvente suavizada del espectro.
-    Suavizar primero evita confundir armónicos individuales con formantes.
+
+    La ventana de suavizado Savitzky-Golay se adapta al caso:
+    - Varios períodos (muchos puntos): ventana ≈ 1.5×F0 en Hz → aplana armónicos
+      pero preserva separación entre formantes.
+    - Un solo período (pocos puntos, Δf = F0): el espectro ya es muy grueso;
+      se usa ventana mayor (≈ 2.5×F0) para suprimir el rizado residual.
+    Una ventana fija en Hz falla con F0 bajas (como la /o/ a ~107 Hz).
     """
     from scipy.signal import find_peaks, savgol_filter
 
     mask = (freqs >= f_min) & (freqs <= f_max)
-    f_v = freqs[mask]
-    m_v = magnitudes[mask]
-
+    f_v, m_v = freqs[mask], magnitudes[mask]
     if len(f_v) < 10:
-        return []
+        return [], None, None
 
-    # Suavizar la envolvente espectral para eliminar los picos de armónicos
-    # ventana = ~200 Hz de ancho, debe ser impar
-    resolucion_hz = f_v[1] - f_v[0] if len(f_v) > 1 else 1
-    ventana_muestras = int(200 / resolucion_hz)
-    if ventana_muestras % 2 == 0:
-        ventana_muestras += 1
-    ventana_muestras = max(5, ventana_muestras)
+    resol = f_v[1] - f_v[0]
 
-    envolvente = savgol_filter(m_v, window_length=ventana_muestras, polyorder=3)
+    # Detectar si estamos en modo "un período" (resolución ≈ F0)
+    un_periodo = resol > f0_hz * 0.7
 
-    # Buscar picos con distancia mínima de ~300 Hz entre formantes
-    dist_muestras = max(1, int(300 / resolucion_hz))
-    picos, props = find_peaks(envolvente, distance=dist_muestras, prominence=envolvente.max() * 0.05)
+    if un_periodo:
+        # Con un solo período hay muy pocos puntos: suavizado más agresivo
+        win = max(5, int(2.5 * f0_hz / resol))
+    else:
+        win = max(5, int(1.5 * f0_hz / resol))
 
-    if len(picos) == 0:
-        return []
+    if win % 2 == 0:
+        win += 1
+    win = min(win, len(f_v) - 2)
 
-    # Tomar los primeros n_formantes picos en orden de frecuencia (de menor a mayor)
-    formantes = [(f_v[picos[i]], envolvente[picos[i]]) for i in range(min(n_formantes, len(picos)))]
+    env = savgol_filter(m_v, window_length=win, polyorder=3)
+    env = np.clip(env, 0, None)
+
+    dist = max(1, int(300 / resol))
+    # 0.10 del máximo: descarta picos espurios de baja energía (ej. armónicos
+    # residuales o lóbulos laterales de la envolvente) sin perder formantes reales
+    picos, _ = find_peaks(env, distance=dist, prominence=env.max() * 0.10)
+
+    formantes = [(f_v[p], env[p]) for p in picos[:n_formantes]]
+    return formantes, f_v, env
+
+
+def _graficar_un_panel(ax, freqs, Y, f0_hz, nombre, color_espectro, color_env,
+                       color_fmt, mostrar_formantes=True):
+    """
+    Dibuja espectro normalizado (0–1, escala lineal) + envolvente suavizada
+    + marcas de formantes en un eje dado.
+
+    Se usa escala lineal normalizada en vez de dB porque los valles entre
+    armónicos bajan a -200 dB y comprimen todo el contenido útil en una
+    franja muy pequeña del eje Y.
+
+    Retorna lista de formantes: [(freq_hz, mag_norm), ...]
+    """
+    # ── Espectro normalizado (lineal) ──────────────────────────────────
+    Y_norm = Y / (Y.max() + 1e-10)
+    mask_plot = freqs <= 4500
+    ax.plot(freqs[mask_plot], Y_norm[mask_plot],
+            color=color_espectro, lw=0.8, alpha=0.55, label="Espectro")
+
+    # ── Envolvente y formantes ─────────────────────────────────────────
+    formantes, f_env, env_vals = hallar_formantes(freqs, Y, f0_hz)
+
+    if f_env is not None and mostrar_formantes and len(formantes) > 0:
+        env_norm = env_vals / (env_vals.max() + 1e-10)
+        ax.plot(f_env, env_norm, color=color_env, lw=2.2, linestyle="--",
+                alpha=0.95, label="Envolvente", zorder=4)
+
+        # Alturas de etiqueta escalonadas para evitar solapamiento
+        alturas = [0.92, 0.80, 0.68]
+        for k, (f_f, _) in enumerate(formantes):
+            y_label = alturas[k] if k < len(alturas) else 0.60 - k * 0.10
+            ax.axvline(f_f, color=color_fmt, lw=1.3, linestyle=":",
+                       alpha=0.75, zorder=3)
+            ax.text(f_f + 30, y_label,
+                    f"F{k+1}={f_f:.0f} Hz",
+                    fontsize=8, color=color_fmt, fontweight="bold",
+                    bbox=dict(facecolor="white", alpha=0.7,
+                              edgecolor="none", pad=1.5))
+
+    # ── Ejes ───────────────────────────────────────────────────────────
+    ax.set_xlim(0, 4500)
+    ax.set_ylim(-0.05, 1.10)
+    ax.set_xlabel("Frecuencia (Hz)", fontsize=8)
+    ax.set_ylabel("Magnitud normalizada", fontsize=8)
+    ax.set_title(nombre, fontsize=9, fontweight="bold")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3)
+
     return formantes
 
 
-def graficar_fft_vocales(vocales, señal, fs, titulo, nombre_archivo):
-    """Genera la figura de FFT para una señal (lenta o rápida)."""
-    n_vocales = len(vocales)
-    fig, axes = plt.subplots(n_vocales, 2, figsize=(14, 5 * n_vocales))
-    if n_vocales == 1:
-        axes = np.array([axes])
-    fig.suptitle(titulo, fontsize=12, fontweight="bold")
-
-    for i, vocal in enumerate(vocales):
-        nombre = vocal["nombre"]
-        t_ini, t_fin = vocal["t_ini"], vocal["t_fin"]
-
-        n0, n1 = tiempo_a_muestras(t_ini, t_fin, fs)
-        T0, F0 = estimar_periodo_autocorr(señal[n0:n1], fs)
-        print(f"  {nombre}: F₀ = {F0:.1f} Hz" if F0 else f"  {nombre}: F₀ no estimado")
-
-        ax_multi = axes[i, 0]
-        ax_one   = axes[i, 1]
-
-        # — Varios períodos —
-        freqs_m, Y_m = fft_segmento(señal, fs, t_ini, t_fin)
-        ax_multi.plot(freqs_m, 20 * np.log10(Y_m + 1e-10),
-                      color=COLORS["fft_multi"], lw=0.7)
-        ax_multi.set_xlim(0, 5000)
-        ax_multi.set_title(f"{nombre} — Varios períodos", fontsize=9)
-        ax_multi.grid(True, alpha=0.3)
-
-        formantes = hallar_formantes(freqs_m, Y_m)
-        for fi, (f_f, m_f) in enumerate(formantes):
-            m_dB = 20 * np.log10(m_f + 1e-10)
-            ax_multi.axvline(f_f, color="red", lw=1, linestyle="--", alpha=0.7)
-            ax_multi.text(f_f + 30, m_dB - 5, f"F{fi+1}={f_f:.0f}Hz",
-                          fontsize=7, color="red")
-            print(f"    F{fi+1} (multi-período) = {f_f:.1f} Hz")
-
-        # — Un solo período —
-        if T0 and T0 > 0:
-            freqs_o, Y_o = un_periodo(señal, fs, t_ini + 0.01, T0)
-            ax_one.plot(freqs_o, 20 * np.log10(Y_o + 1e-10),
-                        color=COLORS["fft_one"], lw=0.7)
-            ax_one.set_xlim(0, 5000)
-            ax_one.set_title(f"{nombre} — Un período (T₀≈{T0*1000:.1f} ms)", fontsize=9)
-
-            formantes_o = hallar_formantes(freqs_o, Y_o)
-            for fi, (f_f, m_f) in enumerate(formantes_o):
-                m_dB = 20 * np.log10(m_f + 1e-10)
-                ax_one.axvline(f_f, color="darkred", lw=1, linestyle="--", alpha=0.7)
-                ax_one.text(f_f + 30, m_dB - 5, f"F{fi+1}={f_f:.0f}Hz",
-                            fontsize=7, color="darkred")
-                print(f"    F{fi+1} (1 período)    = {f_f:.1f} Hz")
-        else:
-            ax_one.text(0.5, 0.5, "T₀ no estimado\n(ajustar tiempos)",
-                        ha="center", va="center", transform=ax_one.transAxes, fontsize=10)
-            ax_one.set_title(f"{nombre} — Un período (no disponible)", fontsize=9)
-
-        for ax in [ax_multi, ax_one]:
-            ax.set_ylabel("Magnitud (dB)")
-            ax.set_xlabel("Frecuencia (Hz)")
-            ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.subplots_adjust(hspace=0.6, top=0.87)
-    plt.savefig(nombre_archivo, dpi=150)
-    plt.show()
-    print(f"Figura guardada: {nombre_archivo}")
-
-
 def punto3(ruta_lenta, ruta_rapida):
+    """
+    Punto 3: FFT de las vocales de la señal lenta y rápida.
+
+    Figura 1 — Comparación lenta vs rápida (varios períodos):
+        3 filas (una por vocal) × 2 columnas (lenta | rápida).
+        Permite comparar directamente los formantes entre velocidades.
+
+    Figura 2 — Varios períodos vs. un período (señal lenta):
+        3 filas × 2 columnas (varios períodos | un período).
+        Ilustra el trade-off de resolución frecuencial.
+
+    En consola se imprime una tabla resumen con F0 y formantes.
+    """
+    from scipy.signal import savgol_filter
+
     print("\n=== PUNTO 3 ===")
     fs_l, señal_l = cargar_audio(ruta_lenta)
     fs_r, señal_r = cargar_audio(ruta_rapida)
 
-    print("\n— Señal LENTA —")
-    graficar_fft_vocales(
-        VOCALES_LENTA, señal_l, fs_l,
-        titulo='Punto 3 — FFT vocales · Señal LENTA\n(varios períodos vs. un período)',
-        nombre_archivo="punto3_fft_lenta.png"
+    # ------------------------------------------------------------------
+    # Pre-calcular F0 de cada vocal (robusto, mediana sobre ventanas)
+    # ------------------------------------------------------------------
+    f0_lenta, f0_rapida = [], []
+    for vl, vr in zip(VOCALES_LENTA, VOCALES_RAPIDA):
+        n0, n1 = tiempo_a_muestras(vl["t_ini"], vl["t_fin"], fs_l)
+        f0_lenta.append(estimar_f0_robusto(señal_l[n0:n1], fs_l))
+        n0, n1 = tiempo_a_muestras(vr["t_ini"], vr["t_fin"], fs_r)
+        f0_rapida.append(estimar_f0_robusto(señal_r[n0:n1], fs_r))
+
+    # ------------------------------------------------------------------
+    # FIGURA 1 — Lenta vs Rápida (varios períodos), una fila por vocal
+    # ------------------------------------------------------------------
+    n_v = len(VOCALES_LENTA)
+    fig1, axes1 = plt.subplots(n_v, 2, figsize=(14, 5 * n_v))
+    fig1.suptitle(
+        "Punto 3 — Espectro FFT: señal LENTA vs RÁPIDA\n(segmento completo de cada vocal)",
+        fontsize=12, fontweight="bold",
     )
 
-    print("\n— Señal RÁPIDA —")
-    graficar_fft_vocales(
-        VOCALES_RAPIDA, señal_r, fs_r,
-        titulo='Punto 3 — FFT vocales · Señal RÁPIDA\n(varios períodos vs. un período)',
-        nombre_archivo="punto3_fft_rapida.png"
+    print("\n{'Vocal':<20} {'Señal':<8} {'F0 (Hz)':>8}  {'F1':>8}  {'F2':>8}  {'F3':>8}")
+    print("-" * 70)
+
+    resumen = []   # guardar para figura de tabla (opcional)
+
+    for i, (vl, vr) in enumerate(zip(VOCALES_LENTA, VOCALES_RAPIDA)):
+        nombre_vocal = vl["nombre"].replace("Vocal ", "")
+
+        # — Lenta —
+        freqs_l, Y_l = fft_segmento(señal_l, fs_l, vl["t_ini"], vl["t_fin"])
+        fmts_l = _graficar_un_panel(
+            axes1[i, 0], freqs_l, Y_l, f0_lenta[i],
+            nombre=f"{nombre_vocal} — LENTA  (F₀≈{f0_lenta[i]:.0f} Hz)",
+            color_espectro=COLORS["fft_multi"],
+            color_env="#1565C0",
+            color_fmt="#0D47A1",
+        )
+        # — Rápida —
+        freqs_r, Y_r = fft_segmento(señal_r, fs_r, vr["t_ini"], vr["t_fin"])
+        fmts_r = _graficar_un_panel(
+            axes1[i, 1], freqs_r, Y_r, f0_rapida[i],
+            nombre=f"{nombre_vocal} — RÁPIDA  (F₀≈{f0_rapida[i]:.0f} Hz)",
+            color_espectro=COLORS["fft_one"],
+            color_env="#B71C1C",
+            color_fmt="#7F0000",
+        )
+
+
+        # Imprimir resumen en consola
+        def _fmt_row(señal_str, f0, fmts):
+            cols = [f"{f:.0f}" for f, _ in fmts]
+            cols += ["—"] * (3 - len(cols))
+            print(f"  {nombre_vocal:<18} {señal_str:<8} {f0:>8.1f}  "
+                  f"{cols[0]:>8}  {cols[1]:>8}  {cols[2]:>8}")
+
+        _fmt_row("lenta",  f0_lenta[i],  fmts_l)
+        _fmt_row("rápida", f0_rapida[i], fmts_r)
+        resumen.append((nombre_vocal, f0_lenta[i], f0_rapida[i], fmts_l, fmts_r))
+
+    plt.tight_layout()
+    plt.subplots_adjust(hspace=0.55, top=0.90)
+    plt.savefig("punto3_fft_lenta_vs_rapida.png", dpi=150)
+    plt.show()
+    print("\nFigura guardada: punto3_fft_lenta_vs_rapida.png")
+
+    # ------------------------------------------------------------------
+    # FIGURA 2 — Varios períodos vs. un período (señal LENTA)
+    # ------------------------------------------------------------------
+    fig2, axes2 = plt.subplots(n_v, 2, figsize=(14, 5 * n_v))
+    fig2.suptitle(
+        "Punto 3 — Varios períodos vs. un período · Señal LENTA\n"
+        "(comparación de resolución frecuencial)",
+        fontsize=12, fontweight="bold",
     )
+
+    for i, vl in enumerate(VOCALES_LENTA):
+        nombre_vocal = vl["nombre"].replace("Vocal ", "")
+        f0 = f0_lenta[i]
+        T0 = 1.0 / f0
+
+        # Varios períodos
+        freqs_m, Y_m = fft_segmento(señal_l, fs_l, vl["t_ini"], vl["t_fin"])
+        dur_ms = (vl["t_fin"] - vl["t_ini"]) * 1000
+        _graficar_un_panel(
+            axes2[i, 0], freqs_m, Y_m, f0,
+            nombre=f"{nombre_vocal} — Varios períodos ({dur_ms:.0f} ms, Δf={freqs_m[1]:.1f} Hz)",
+            color_espectro=COLORS["fft_multi"],
+            color_env="#1565C0",
+            color_fmt="#0D47A1",
+        )
+
+        # Un solo período
+        freqs_o, Y_o = fft_un_periodo(señal_l, fs_l, vl["t_ini"] + 0.01, f0)
+        fmts_1p = _graficar_un_panel(
+            axes2[i, 1], freqs_o, Y_o, f0,
+            nombre=f"{nombre_vocal} — Un período (T₀={T0*1000:.2f} ms, Δf={f0:.0f} Hz)",
+            color_espectro=COLORS["fft_one"],
+            color_env="#E65100",
+            color_fmt="#BF360C",
+            mostrar_formantes=True,
+        )
+        # Imprimir comparación en consola
+        fmts_multi_str = [f"F{k+1}={fv:.0f}" for k, (fv, _) in enumerate(
+            hallar_formantes(freqs_m, Y_m, f0)[0])]
+        fmts_1p_str   = [f"F{k+1}={fv:.0f}" for k, (fv, _) in enumerate(fmts_1p)]
+        print(f"    {nombre_vocal} | varios per.: {fmts_multi_str}  →  1 período: {fmts_1p_str}  (Δf={f0:.0f} Hz)")
+        # Anotación de resolución
+        axes2[i, 1].text(
+            0.98, 0.03,
+            f"Resolución frecuencial = F₀ = {f0:.0f} Hz\n"
+            f"→ picos aproximados al múltiplo de F₀ más cercano",
+            transform=axes2[i, 1].transAxes,
+            ha="right", va="bottom", fontsize=7.5,
+            bbox=dict(facecolor="lightyellow", alpha=0.85, edgecolor="gray", pad=3),
+        )
+
+    plt.tight_layout()
+    plt.subplots_adjust(hspace=0.55, top=0.90)
+    plt.savefig("punto3_fft_periodos.png", dpi=150)
+    plt.show()
+    print("Figura guardada: punto3_fft_periodos.png")
 
 
  

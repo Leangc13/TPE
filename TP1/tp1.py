@@ -343,25 +343,8 @@ def _graficar_un_panel(ax, freqs, Y, f0_hz, nombre, color_espectro, color_env,
     ax.plot(freqs[mask_plot], Y_norm[mask_plot],
             color=color_espectro, lw=0.8, alpha=0.55, label="Espectro")
 
-    # ── Envolvente y formantes ─────────────────────────────────────────
+    # ── Calcular formantes (para retorno) ────────────────────────────
     formantes, f_env, env_vals = hallar_formantes(freqs, Y, f0_hz)
-
-    if f_env is not None and mostrar_formantes and len(formantes) > 0:
-        env_norm = env_vals / (env_vals.max() + 1e-10)
-        ax.plot(f_env, env_norm, color=color_env, lw=2.2, linestyle="--",
-                alpha=0.95, label="Envolvente", zorder=4)
-
-        # Alturas de etiqueta escalonadas para evitar solapamiento
-        alturas = [0.92, 0.80, 0.68]
-        for k, (f_f, _) in enumerate(formantes):
-            y_label = alturas[k] if k < len(alturas) else 0.60 - k * 0.10
-            ax.axvline(f_f, color=color_fmt, lw=1.3, linestyle=":",
-                       alpha=0.75, zorder=3)
-            ax.text(f_f + 30, y_label,
-                    f"F{k+1}={f_f:.0f} Hz",
-                    fontsize=8, color=color_fmt, fontweight="bold",
-                    bbox=dict(facecolor="white", alpha=0.7,
-                              edgecolor="none", pad=1.5))
 
     # ── Ejes ───────────────────────────────────────────────────────────
     ax.set_xlim(0, 4500)
@@ -517,8 +500,66 @@ def punto3(ruta_lenta, ruta_rapida):
     plt.show()
     print("Figura guardada: punto3_fft_periodos.png")
 
+    # ------------------------------------------------------------------
+    # FIGURA 3 — Varios períodos vs. un período (señal RÁPIDA)
+    # ------------------------------------------------------------------
+    fig3, axes3 = plt.subplots(n_v, 2, figsize=(14, 5 * n_v))
+    fig3.suptitle(
+        "Punto 3 — Varios períodos vs. un período · Señal RÁPIDA\n"
+        "(comparación de resolución frecuencial)",
+        fontsize=12, fontweight="bold",
+    )
 
- 
+    for i, vr in enumerate(VOCALES_RAPIDA):
+        nombre_vocal = vr["nombre"].replace("Vocal ", "")
+        f0 = f0_rapida[i]
+        T0 = 1.0 / f0
+
+        # Varios períodos
+        freqs_m, Y_m = fft_segmento(señal_r, fs_r, vr["t_ini"], vr["t_fin"])
+        dur_ms = (vr["t_fin"] - vr["t_ini"]) * 1000
+        _graficar_un_panel(
+            axes3[i, 0], freqs_m, Y_m, f0,
+            nombre=f"{nombre_vocal} — Varios períodos ({dur_ms:.0f} ms, Δf={freqs_m[1]:.1f} Hz)",
+            color_espectro=COLORS["fft_multi"],
+            color_env="#1565C0",
+            color_fmt="#0D47A1",
+        )
+
+        # Un solo período
+        freqs_o, Y_o = fft_un_periodo(señal_r, fs_r, vr["t_ini"] + 0.005, f0)
+        fmts_1p = _graficar_un_panel(
+            axes3[i, 1], freqs_o, Y_o, f0,
+            nombre=f"{nombre_vocal} — Un período (T₀={T0*1000:.2f} ms, Δf={f0:.0f} Hz)",
+            color_espectro=COLORS["fft_one"],
+            color_env="#E65100",
+            color_fmt="#BF360C",
+            mostrar_formantes=True,
+        )
+        # Imprimir comparación en consola
+        fmts_multi_str = [f"F{k+1}={fv:.0f}" for k, (fv, _) in enumerate(
+            hallar_formantes(freqs_m, Y_m, f0)[0])]
+        fmts_1p_str   = [f"F{k+1}={fv:.0f}" for k, (fv, _) in enumerate(fmts_1p)]
+        print(f"    {nombre_vocal} (rápida) | varios per.: {fmts_multi_str}  →  1 período: {fmts_1p_str}  (Δf={f0:.0f} Hz)")
+        # Anotación de resolución
+        axes3[i, 1].text(
+            0.98, 0.03,
+            f"Resolución frecuencial = F₀ = {f0:.0f} Hz\n"
+            f"→ picos aproximados al múltiplo de F₀ más cercano",
+            transform=axes3[i, 1].transAxes,
+            ha="right", va="bottom", fontsize=7.5,
+            bbox=dict(facecolor="lightyellow", alpha=0.85, edgecolor="gray", pad=3),
+        )
+
+    plt.tight_layout()
+    plt.subplots_adjust(hspace=0.55, top=0.90)
+    plt.savefig("punto3_fft_periodos_rapida.png", dpi=150)
+    plt.show()
+    print("Figura guardada: punto3_fft_periodos_rapida.png")
+
+
+
+
 # =============================================================================
 #  AUXILIAR — Visualizador interactivo para calibrar los tiempos
 # =============================================================================

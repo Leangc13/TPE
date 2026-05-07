@@ -66,13 +66,15 @@ SEGS_RAPIDA = [
 VOCALES_LENTA = [
     {"nombre": "Vocal /a/ (LA)",  "t_ini": 0.075, "t_fin": 0.317},
     {"nombre": "Vocal /a/ (PA)",  "t_ini": 0.503, "t_fin": 0.676},
-    {"nombre": "Vocal /o/ (CHO)", "t_ini": 0.938, "t_fin": 1.069},
+    # {"nombre": "Vocal /o/ (CHO)", "t_ini": 0.938, "t_fin": 1.069},
+    {"nombre": "Vocal /o/ (CHO)", "t_ini": 0.940, "t_fin": 1.053},
 ]
  # Vocales de la señal RÁPIDA — ajustá los tiempos con visualizar_onda()
 VOCALES_RAPIDA = [
     {"nombre": "Vocal /a/ (LA)",  "t_ini": 0.070, "t_fin": 0.125},
     {"nombre": "Vocal /a/ (PA)",  "t_ini": 0.278, "t_fin": 0.353},
     {"nombre": "Vocal /o/ (CHO)", "t_ini": 0.538, "t_fin": 0.604},
+    # {"nombre": "Vocal /o/ (CHO)", "t_ini": 0.541, "t_fin": 0.577},
 ]
 # =============================================================================
 #  Utilidades

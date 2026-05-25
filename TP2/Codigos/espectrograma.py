@@ -99,9 +99,9 @@ def plot_espectrograma(archivo, tipo, nombre, rango_t=None):
     cbar.set_label("Energía [dB]")
 
     plt.tight_layout()
-    plt.savefig(f"espectrograma_{tipo}.png", dpi=150, bbox_inches="tight")
+    plt.savefig(f"espectrograma_{tipo}_"+ nombre +".png", dpi=150, bbox_inches="tight")
     plt.show()
-    print(f"[OK] Guardado: espectrograma_{tipo}.png")
+    print(f"[OK] Guardado: espectrograma_{tipo}_"+ nombre +".png")
     print(f"     fs = {fs} Hz  |  nperseg = {nperseg} muestras "
           f"({p['nperseg_ms']} ms)  |  noverlap = {noverlap}")
 

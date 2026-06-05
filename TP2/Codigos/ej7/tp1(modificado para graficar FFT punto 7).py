@@ -396,7 +396,7 @@ def punto3(ruta_lenta, ruta_rapida):
     n_v = len(VOCALES_LENTA)
     fig1, axes1 = plt.subplots(n_v, 2, figsize=(14, 5 * n_v))
     fig1.suptitle(
-        "Punto 3 — Espectro FFT: señal LENTA vs PITCH\n(segmento completo de cada vocal)",
+        "Espectro FFT: señal LENTA vs PITCH\n(segmento completo de cada vocal)",
         fontsize=12, fontweight="bold",
     )
 

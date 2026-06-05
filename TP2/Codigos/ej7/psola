@@ -1,0 +1,261 @@
+"""
+TD-PSOLA (Time Domain Pitch Synchronous Overlap and Add)
+========================================================
+Modifica la frecuencia fundamental (pitch) de una señal de voz:
+  - Voz masculina (85-170 Hz) → suena femenina: multiplica F0 × 1.4
+  - Voz femenina              → suena masculina: multiplica F0 × 0.7
+
+Uso:
+    python td_psola.py <input.wav> --modo hombre_a_mujer
+    python td_psola.py <input.wav> --modo mujer_a_hombre
+    python td_psola.py <input.wav> --factor 1.4
+    python td_psola.py <input.wav> --factor 0.7
+
+Requisitos:
+    pip install numpy scipy soundfile
+"""
+
+import argparse
+import numpy as np
+import soundfile as sf
+from scipy.signal import correlate
+
+
+# ─────────────────────────────────────────────────
+# 1. DETECCIÓN DE PITCH  (autocorrelación)
+# ─────────────────────────────────────────────────
+
+def detectar_pitch(frame: np.ndarray, sr: int, f0_min=60, f0_max=400) -> float:
+    """
+    Estima la frecuencia fundamental de un frame usando autocorrelación.
+    Devuelve 0.0 si el frame es sordo (no periódico).
+    """
+    N = len(frame)
+    # Ventana de Hann para reducir efectos de borde
+    ventana = np.hanning(N)
+    frame_v = frame * ventana
+
+    # Autocorrelación normalizada
+    corr = correlate(frame_v, frame_v, mode='full')
+    corr = corr[N - 1:]          # mitad positiva
+    corr /= (corr[0] + 1e-10)   # normalizar a 1 en lag=0
+
+    # Rango de lags válidos según f0_min / f0_max
+    lag_min = int(sr / f0_max)
+    lag_max = int(sr / f0_min)
+    lag_min = max(lag_min, 1)
+    lag_max = min(lag_max, N - 1)
+
+    if lag_min >= lag_max:
+        return 0.0
+
+    # Pico máximo en el rango
+    ventana_corr = corr[lag_min:lag_max]
+    idx_max = np.argmax(ventana_corr)
+    valor_max = ventana_corr[idx_max]
+
+    # Umbral de voz sonora (típico: 0.3-0.45)
+    UMBRAL_VOCALIDAD = 0.35
+    if valor_max < UMBRAL_VOCALIDAD:
+        return 0.0
+
+    lag_optimo = lag_min + idx_max
+    return float(sr) / lag_optimo
+
+
+# ─────────────────────────────────────────────────
+# 2. LOCALIZACIÓN DE PICOS (marcas de pitch)
+# ─────────────────────────────────────────────────
+
+def localizar_picos(signal: np.ndarray, sr: int,
+                    frame_ms=30, step_ms=10,
+                    f0_min=60, f0_max=400) -> list[int]:
+    """
+    Recorre la señal en frames solapados y devuelve las posiciones
+    (muestras) de los picos de cada período de pitch detectado.
+    Solo se procesan los segmentos sonoros (F0 > 0).
+    """
+    frame_n = int(sr * frame_ms / 1000)
+    step_n  = int(sr * step_ms  / 1000)
+    N = len(signal)
+    marcas = []
+
+    pos = 0
+    while pos + frame_n <= N:
+        frame = signal[pos: pos + frame_n]
+        f0 = detectar_pitch(frame, sr, f0_min, f0_max)
+
+        if f0 > 0:
+            periodo = int(round(sr / f0))
+            # Avanzar por picos dentro del frame
+            t = pos
+            while t < pos + frame_n and t < N:
+                # Buscar el máximo real en una ventana ±medio período
+                inicio = max(0, t - periodo // 2)
+                fin    = min(N, t + periodo // 2)
+                pico   = inicio + int(np.argmax(np.abs(signal[inicio:fin])))
+                if not marcas or pico > marcas[-1]:
+                    marcas.append(pico)
+                t += periodo
+
+        pos += step_n
+
+    return sorted(set(marcas))
+
+
+# ─────────────────────────────────────────────────
+# 3. TD-PSOLA  (modificación de pitch)
+# ─────────────────────────────────────────────────
+
+def td_psola(signal: np.ndarray, sr: int, factor: float) -> np.ndarray:
+    """
+    Aplica TD-PSOLA para cambiar el pitch por 'factor' sin alterar
+    la duración de la señal.
+
+    Parámetros
+    ----------
+    signal : np.ndarray  señal de entrada (mono, float)
+    sr     : int         frecuencia de muestreo
+    factor : float       factor de modificación de pitch
+                           > 1.0  → pitch más agudo   (p.ej. 1.4 hombre→mujer)
+                           < 1.0  → pitch más grave    (p.ej. 0.7 mujer→hombre)
+    """
+    # ── Paso 1: detectar segmentos sonoros y localizar marcas de pitch
+    print("  [1/3] Detectando marcas de pitch...")
+    marcas = localizar_picos(signal, sr)
+    if len(marcas) < 2:
+        print("  ⚠  No se detectaron suficientes marcas de pitch. "
+              "La señal parece completamente sorda.")
+        return signal.copy()
+
+    N = len(signal)
+    salida = np.zeros(N, dtype=np.float64)
+    pesos  = np.zeros(N, dtype=np.float64)   # para normalizar el OLA
+
+    # ── Paso 2: para cada marca, extraer segmento, desplazarlo y sumarlo
+    print(f"  [2/3] Aplicando PSOLA con factor={factor:.2f} "
+          f"sobre {len(marcas)} marcas de pitch...")
+
+    for idx, marca in enumerate(marcas):
+        # Período local estimado con el vecino siguiente
+        if idx + 1 < len(marcas):
+            periodo = marcas[idx + 1] - marca
+        else:
+            periodo = marcas[-1] - marcas[-2]
+
+        if periodo <= 0:
+            continue
+
+        # Tamaño de ventana = 2 períodos (centrado en la marca)
+        mitad = periodo
+        inicio_src = max(0, marca - mitad)
+        fin_src    = min(N, marca + mitad)
+        segmento   = signal[inicio_src: fin_src].copy()
+
+        # Ventana de Hann para suavizar el solapamiento
+        ventana = np.hanning(len(segmento))
+        segmento_v = segmento * ventana
+
+        # ── Paso 3: posición de destino  (factor controla el nuevo período)
+        # La posición destino se escala para ajustar la nueva F0
+        t_dest = int(round(marca / factor)) if factor != 0 else marca
+
+        inicio_dst = t_dest - mitad
+        fin_dst    = t_dest + mitad
+
+        # Recortar segmento y destino si exceden los límites
+        seg_inicio = max(0, -inicio_dst)
+        seg_fin    = len(segmento_v) - max(0, fin_dst - N)
+
+        dst_inicio = max(0, inicio_dst)
+        dst_fin    = dst_inicio + (seg_fin - seg_inicio)
+
+        if seg_fin <= seg_inicio or dst_fin > N or dst_inicio < 0:
+            continue
+
+        # OLA: acumular segmento en la posición destino
+        salida[dst_inicio:dst_fin] += segmento_v[seg_inicio:seg_fin]
+        pesos [dst_inicio:dst_fin] += ventana    [seg_inicio:seg_fin]
+
+    # ── Normalización por los pesos (evita discontinuidades)
+    print("  [3/3] Normalizando señal de salida...")
+    mascara = pesos > 1e-6
+    salida[mascara] /= pesos[mascara]
+
+    # Las zonas sin cobertura (sordas) se rellenan con la señal original
+    salida[~mascara] = signal[~mascara]
+
+    # Normalizar amplitud
+    max_amp = np.max(np.abs(salida))
+    if max_amp > 0:
+        salida = salida / max_amp * np.max(np.abs(signal))
+
+    return salida.astype(np.float32)
+
+
+# ─────────────────────────────────────────────────
+# 4. FUNCIÓN PRINCIPAL
+# ─────────────────────────────────────────────────
+
+def procesar(entrada: str, salida: str, factor: float) -> None:
+    print(f"\n{'='*55}")
+    print(f"  TD-PSOLA  –  Conversión de pitch")
+    print(f"{'='*55}")
+    print(f"  Entrada : {entrada}")
+    print(f"  Salida  : {salida}")
+    print(f"  Factor  : {factor:.2f}  "
+          f"({'grave (mujer→hombre)' if factor < 1 else 'agudo (hombre→mujer)'})")
+    print(f"{'='*55}")
+
+    # Leer audio
+    signal, sr = sf.read(entrada, dtype='float32')
+    if signal.ndim > 1:          # convertir a mono
+        signal = signal.mean(axis=1)
+    print(f"  Audio cargado: {len(signal)/sr:.2f} s  @  {sr} Hz")
+
+    # Aplicar TD-PSOLA
+    signal_mod = td_psola(signal, sr, factor)
+
+    # Guardar resultado
+    sf.write(salida, signal_mod, sr)
+    print(f"\n  ✔  Archivo guardado: {salida}")
+    print(f"{'='*55}\n")
+
+
+# ─────────────────────────────────────────────────
+# 5. CLI
+# ─────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="TD-PSOLA: modifica el pitch de una señal de voz."
+    )
+    parser.add_argument("entrada",  help="Archivo de audio de entrada (.wav)")
+    parser.add_argument("--salida", default=None,
+                        help="Archivo de audio de salida (por defecto: entrada_modificado.wav)")
+
+    grupo = parser.add_mutually_exclusive_group()
+    grupo.add_argument("--modo", choices=["hombre_a_mujer", "mujer_a_hombre"],
+                       help="Modo de conversión (aplica factor 1.4 ó 0.7 automáticamente)")
+    grupo.add_argument("--factor", type=float,
+                       help="Factor manual de modificación de pitch (p.ej. 1.4 ó 0.7)")
+
+    args = parser.parse_args()
+
+    # Determinar factor
+    if args.modo == "hombre_a_mujer":
+        factor = 1.4
+    elif args.modo == "mujer_a_hombre":
+        factor = 0.7
+    elif args.factor is not None:
+        factor = args.factor
+    else:
+        parser.error("Debes indicar --modo o --factor.")
+
+    # Nombre de salida
+    if args.salida is None:
+        base = args.entrada.rsplit(".", 1)[0]
+        ext  = args.entrada.rsplit(".", 1)[-1] if "." in args.entrada else "wav"
+        args.salida = f"{base}_modificado.{ext}"
+
+    procesar(args.entrada, args.salida, factor)

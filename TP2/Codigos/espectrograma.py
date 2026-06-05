@@ -8,12 +8,14 @@ PARAMS = {
     "angosta": {
         "nperseg_ms": 30,
         "overlap_pct": 0.75,
+        "nfft_factor": 4,          # NFFT = nfft_factor × nperseg  →  zero-padding
         "titulo": "Espectrograma de Banda Angosta",
         "freq_max": 4000,
     },
     "ancha": {
         "nperseg_ms": 5,
         "overlap_pct": 0.75,
+        "nfft_factor": 8,          # más factor en banda ancha porque nperseg es pequeño
         "titulo": "Espectrograma de Banda Ancha",
         "freq_max": 4000,
     },
@@ -58,6 +60,7 @@ def plot_espectrograma(archivo, tipo, nombre, rango_t=None):
     # Calcular parámetros de la ventana
     nperseg = int(p["nperseg_ms"] * fs / 1000)
     noverlap = int(nperseg * p["overlap_pct"])
+    nfft    = nperseg * p["nfft_factor"]   # zero-padding: NFFT > nperseg → mayor resolución en frecuencia
 
     # Calcular espectrograma
     f, t, Sxx = spectrogram(
@@ -66,6 +69,7 @@ def plot_espectrograma(archivo, tipo, nombre, rango_t=None):
         window="hann",
         nperseg=nperseg,
         noverlap=noverlap,
+        nfft=nfft,
         scaling="spectrum",
     )
 
@@ -99,13 +103,13 @@ def plot_espectrograma(archivo, tipo, nombre, rango_t=None):
     cbar.set_label("Energía [dB]")
 
     plt.tight_layout()
-    plt.savefig(f"espectrograma_{tipo}_"+ nombre +".png", dpi=150, bbox_inches="tight")
+    # plt.savefig(f"espectrograma_{tipo}_"+ nombre +".png", dpi=150, bbox_inches="tight")
     # plt.savefig(f"espectrograma_{tipo}_"+ nombre + "[lento]" +".png", dpi=150, bbox_inches="tight")
-    # plt.savefig(f"espectrograma_{tipo}_"+ nombre + "[rapido]" +".png", dpi=150, bbox_inches="tight")
+    plt.savefig(f"espectrograma_{tipo}_"+ nombre + "[rapido]" +".png", dpi=150, bbox_inches="tight")
     plt.show()
     print(f"[OK] Guardado: espectrograma_{tipo}_"+ nombre +".png")
     print(f"     fs = {fs} Hz  |  nperseg = {nperseg} muestras "
-          f"({p['nperseg_ms']} ms)  |  noverlap = {noverlap}")
+          f"({p['nperseg_ms']} ms)  |  noverlap = {noverlap}  |  nfft = {nfft} (×{p['nfft_factor']})")
 
 
 VOCALES_LENTA = [
@@ -121,14 +125,15 @@ VOCALES_RAPIDA = [
 ]
 
 if __name__ == "__main__":
-    plot_espectrograma("lapachos_lento.wav",  "angosta", "LAPACHOS (lento)")
-    plot_espectrograma("lapachos_lento.wav",  "ancha",   "LAPACHOS (lento)")
-    plot_espectrograma("lapachos_rapido.wav", "angosta", "LAPACHOS (rápido)")
-    plot_espectrograma("lapachos_rapido.wav", "ancha",   "LAPACHOS (rápido)")
+    #plot_espectrograma("lapachos_lento.wav",  "angosta", "LAPACHOS (lento)")
+    #plot_espectrograma("lapachos_lento.wav",  "ancha",   "LAPACHOS (lento)")
+    #plot_espectrograma("lapachos_rapido.wav", "angosta", "LAPACHOS (rápido)")
+    #plot_espectrograma("lapachos_rapido.wav", "ancha",   "LAPACHOS (rápido)")
 
     # Ejemplo con segmento y nombre descriptivo
     # plot_espectrograma("lapachos_lento.wav", "angosta", "Vocal [a]", rango_t=[0.5, 1.2])
-    # VOCALES DE LAPACHOS LENTO
+    
+    # VOCALES DE LAPACHOS LENTO-------------------------
     # plot_espectrograma("lapachos_lento.wav", "angosta", VOCALES_LENTA[0]["nombre"], rango_t=[VOCALES_LENTA[0]["t_ini"], VOCALES_LENTA[0]["t_fin"]])
     # plot_espectrograma("lapachos_lento.wav", "ancha", VOCALES_LENTA[0]["nombre"], rango_t=[VOCALES_LENTA[0]["t_ini"], VOCALES_LENTA[0]["t_fin"]])
 
@@ -138,12 +143,12 @@ if __name__ == "__main__":
     # plot_espectrograma("lapachos_lento.wav", "angosta", VOCALES_LENTA[2]["nombre"], rango_t=[VOCALES_LENTA[2]["t_ini"], VOCALES_LENTA[2]["t_fin"]])
     # plot_espectrograma("lapachos_lento.wav", "ancha", VOCALES_LENTA[2]["nombre"], rango_t=[VOCALES_LENTA[2]["t_ini"], VOCALES_LENTA[2]["t_fin"]])
 
-    # VOCALES DE LAPACHOS RAPIDO
-    # plot_espectrograma("lapachos_rapido.wav", "angosta", VOCALES_RAPIDA[0]["nombre"], rango_t=[VOCALES_RAPIDA[0]["t_ini"], VOCALES_RAPIDA[0]["t_fin"]])
+    # VOCALES DE LAPACHOS RAPIDO-----------------------
+     plot_espectrograma("lapachos_rapido.wav", "angosta", VOCALES_RAPIDA[0]["nombre"], rango_t=[VOCALES_RAPIDA[0]["t_ini"], VOCALES_RAPIDA[0]["t_fin"]])
     # plot_espectrograma("lapachos_rapido.wav", "ancha", VOCALES_RAPIDA[0]["nombre"], rango_t=[VOCALES_RAPIDA[0]["t_ini"], VOCALES_RAPIDA[0]["t_fin"]])
 
-    # plot_espectrograma("lapachos_rapido.wav", "angosta", VOCALES_RAPIDA[1]["nombre"], rango_t=[VOCALES_RAPIDA[1]["t_ini"], VOCALES_RAPIDA[1]["t_fin"]])
+     plot_espectrograma("lapachos_rapido.wav", "angosta", VOCALES_RAPIDA[1]["nombre"], rango_t=[VOCALES_RAPIDA[1]["t_ini"], VOCALES_RAPIDA[1]["t_fin"]])
     # plot_espectrograma("lapachos_rapido.wav", "ancha", VOCALES_RAPIDA[1]["nombre"], rango_t=[VOCALES_RAPIDA[1]["t_ini"], VOCALES_RAPIDA[1]["t_fin"]])
 
-    # plot_espectrograma("lapachos_rapido.wav", "angosta", VOCALES_RAPIDA[2]["nombre"], rango_t=[VOCALES_RAPIDA[2]["t_ini"], VOCALES_RAPIDA[2]["t_fin"]])
+     plot_espectrograma("lapachos_rapido.wav", "angosta", VOCALES_RAPIDA[2]["nombre"], rango_t=[VOCALES_RAPIDA[2]["t_ini"], VOCALES_RAPIDA[2]["t_fin"]])
     # plot_espectrograma("lapachos_rapido.wav", "ancha", VOCALES_RAPIDA[2]["nombre"], rango_t=[VOCALES_RAPIDA[2]["t_ini"], VOCALES_RAPIDA[2]["t_fin"]])

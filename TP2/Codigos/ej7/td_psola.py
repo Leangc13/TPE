@@ -8,10 +8,11 @@ RATIO        = 1.4                    # factor de pitch (hombre → mujer)
 F0_MIN, F0_MAX = 80, 170              # rango de pitch del hablante (Hz)
 
 SEGS_LENTA = [
-    {"nombre": "[a] de LA (lento)",   "t_ini": 0.15,  "t_fin": 0.20},
-    {"nombre": "[a] de PA (lento)",   "t_ini": 0.50,  "t_fin": 0.525},
-    {"nombre": "[l] de LA (lento)",   "t_ini": 0.017, "t_fin": 0.060},
-    {"nombre": "[o] de CHOS (lento)", "t_ini": 0.952, "t_fin": 1.062},
+    {"nombre": "-a- (LA)",  "t_ini": 0.075, "t_fin": 0.317},
+    {"nombre": "-a- (PA)",  "t_ini": 0.503, "t_fin": 0.676},
+    {"nombre": "-o- (CHOS)", "t_ini": 0.940, "t_fin": 1.053},
+    {"nombre": "-L- (LA)", "t_ini": 0.019, "t_fin": 0.063},
+    
 ]
 
 # ── Carga de audio ─────────────────────────────────────────────
@@ -92,6 +93,6 @@ for seg in SEGS_LENTA:
     y[n_ini:n_fin] = modificado
 
 # ── Guardar resultado ──────────────────────────────────────────
-out_file = AUDIO_FILE.replace(".wav", f"_pitch_x{RATIO}.wav")
+out_file = AUDIO_FILE.replace(".wav", f"_pitch.wav")
 sf.write(out_file, y, fs)
 print(f"\nArchivo guardado: {out_file}")

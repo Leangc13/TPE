@@ -125,8 +125,8 @@ VOCALES_RAPIDA = [
 ]
 
 if __name__ == "__main__":
-    plot_espectrograma("lapachos_pithc.wav",  "angosta", "LAPACHOS (lento)")
-    plot_espectrograma("lapachos_pithc.wav",  "ancha",   "LAPACHOS (lento)")
+    plot_espectrograma("lapachos_lento_pitch.wav",  "angosta", "LAPACHOS (lento)")
+    plot_espectrograma("lapachos_lento_pitch.wav",  "ancha",   "LAPACHOS (lento)")
 
     # Ejemplo con segmento y nombre descriptivo
     # plot_espectrograma("lapachos_lento.wav", "angosta", "Vocal [a]", rango_t=[0.5, 1.2])

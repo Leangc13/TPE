@@ -75,6 +75,25 @@ VOCALES_RAPIDA = [
     {"nombre": "Vocal /o/ (CHO)", "t_ini": 0.538, "t_fin": 0.604},
 ]
 # =============================================================================
+#  Formantes de referencia del Cuadro 3 (medidos manualmente)
+# =============================================================================
+# Estructura: { nombre_vocal: { "lenta": (F0, F1, F2, F3), "rapida": (F0, F1, F2, F3) } }
+FORMANTES_REF = {
+    "/a/ (LA)": {
+        "lenta":  {"F0": 152, "F1":  888, "F2": 1355, "F3": 2562},
+        "rapida": {"F0": 153, "F1":  764, "F2": 1364, "F3": 2456},
+    },
+    "/a/ (PA)": {
+        "lenta":  {"F0": 130, "F1":  815, "F2": 1335, "F3": 2549},
+        "rapida": {"F0": 146, "F1":  867, "F2": 1440, "F3": 2560},
+    },
+    "/o/ (CHO)": {
+        "lenta":  {"F0": 107, "F1":  527, "F2":  939, "F3": 3237},
+        "rapida": {"F0": 105, "F1":  530, "F2": 1167, "F3": 2515},
+    },
+}
+
+# =============================================================================
 #  Utilidades
 # =============================================================================
  
@@ -279,19 +298,12 @@ def fft_un_periodo(señal, fs, t_ini, f0_hz):
     freqs = fftfreq(N, 1 / fs)[:N // 2]
     return freqs, Y
 
-
 def hallar_formantes(freqs, magnitudes, f0_hz, n_formantes=3, f_min=300, f_max=4000):
     """
-    Estima los formantes buscando picos en la envolvente suavizada del espectro.
-
-    La ventana de suavizado Savitzky-Golay se adapta al caso:
-    - Varios períodos (muchos puntos): ventana ≈ 1.5×F0 en Hz → aplana armónicos
-      pero preserva separación entre formantes.
-    - Un solo período (pocos puntos, Δf = F0): el espectro ya es muy grueso;
-      se usa ventana mayor (≈ 2.5×F0) para suprimir el rizado residual.
-    Una ventana fija en Hz falla con F0 bajas (como la /o/ a ~107 Hz).
+    Estima los formantes y calcula la envolvente espectral usando PCHIP.
     """
-    from scipy.signal import find_peaks, savgol_filter
+    from scipy.signal import find_peaks
+    from scipy.interpolate import PchipInterpolator
 
     mask = (freqs >= f_min) & (freqs <= f_max)
     f_v, m_v = freqs[mask], magnitudes[mask]
@@ -299,37 +311,59 @@ def hallar_formantes(freqs, magnitudes, f0_hz, n_formantes=3, f_min=300, f_max=4
         return [], None, None
 
     resol = f_v[1] - f_v[0]
-
-    # Detectar si estamos en modo "un período" (resolución ≈ F0)
     un_periodo = resol > f0_hz * 0.7
 
     if un_periodo:
-        # Con un solo período hay muy pocos puntos: suavizado más agresivo
-        win = max(5, int(2.5 * f0_hz / resol))
+        # 1. CASO DE UN PERÍODO: 
+        # La resolución es tan baja que CADA punto del espectro ES un armónico válido.
+        # Por lo tanto, NO usamos find_peaks. Le pasamos todos los puntos al interpolador.
+        f_pts = f_v
+        m_pts = m_v
+        
+        # Usamos PCHIP para que la curva se tense sobre los puntos sin hundirse.
+        env = PchipInterpolator(f_pts, m_pts)(f_v)
+        env = np.clip(env, 0, None)
+            
     else:
-        win = max(5, int(1.5 * f0_hz / resol))
+        # 2. CASO DE VARIOS PERÍODOS:
+        dist_picos = max(1, int(0.6 * f0_hz / resol))
+        
+        # Agregamos una prominencia MUY baja (0.01) para que detecte todos los armónicos,
+        # incluso los de muy baja energía en las frecuencias altas (F3, F4, etc.).
+        idx_picos, _ = find_peaks(m_v, distance=dist_picos, prominence=m_v.max() * 0.01)
 
-    if win % 2 == 0:
-        win += 1
-    win = min(win, len(f_v) - 2)
+        # 3. ANCLAJE DE EXTREMOS:
+        # Siempre forzamos a que el primer y el último punto del espectro estén incluidos,
+        # para que la envolvente no se corte ni "flote" al inicio o al final.
+        f_pts = np.concatenate([[f_v[0]], f_v[idx_picos], [f_v[-1]]])
+        m_pts = np.concatenate([[m_v[0]], m_v[idx_picos], [m_v[-1]]])
 
-    env = savgol_filter(m_v, window_length=win, polyorder=3)
-    env = np.clip(env, 0, None)
+        f_pts, uniq = np.unique(f_pts, return_index=True)
+        m_pts = m_pts[uniq]
 
-    dist = max(1, int(300 / resol))
-    # 0.10 del máximo: descarta picos espurios de baja energía (ej. armónicos
-    # residuales o lóbulos laterales de la envolvente) sin perder formantes reales
-    picos, _ = find_peaks(env, distance=dist, prominence=env.max() * 0.10)
+        if len(f_pts) < 4:
+            env = PchipInterpolator(f_v, m_v)(f_v)
+        else:
+            env = PchipInterpolator(f_pts, m_pts)(f_v)
 
-    formantes = [(f_v[p], env[p]) for p in picos[:n_formantes]]
+        env = np.clip(env, 0, None)
+
+    # ── Encontrar formantes: máximos de la envolvente ─────────────────
+    dist_fmt = max(1, int(300 / resol))
+    
+    # Para encontrar los formantes (las "montañas" principales de la envolvente),
+    # usamos una prominencia leve del 2%
+    picos_env, _ = find_peaks(env, distance=dist_fmt, prominence=env.max() * 0.02)
+
+    formantes = [(f_v[p], env[p]) for p in picos_env[:n_formantes]]
     return formantes, f_v, env
 
-
 def _graficar_un_panel(ax, freqs, Y, f0_hz, nombre, color_espectro, color_env,
-                       color_fmt, mostrar_formantes=True):
+                       color_fmt, mostrar_formantes=True, formantes_ref=None):
     """
     Dibuja espectro normalizado (0–1, escala lineal) + envolvente suavizada
-    + marcas de formantes en un eje dado.
+    + marcas de formantes estimados y, opcionalmente, los formantes de
+    referencia del Cuadro 3.
 
     Se usa escala lineal normalizada en vez de dB porque los valles entre
     armónicos bajan a -200 dB y comprimen todo el contenido útil en una
@@ -343,19 +377,70 @@ def _graficar_un_panel(ax, freqs, Y, f0_hz, nombre, color_espectro, color_env,
     ax.plot(freqs[mask_plot], Y_norm[mask_plot],
             color=color_espectro, lw=0.8, alpha=0.55, label="Espectro")
 
-    # ── Calcular formantes (para retorno) ────────────────────────────
+    # ── Calcular y GRAFICAR la envolvente ───────────────────────────
     formantes, f_env, env_vals = hallar_formantes(freqs, Y, f0_hz)
+
+    if f_env is not None and env_vals is not None:
+        env_norm = env_vals / (Y.max() + 1e-10)
+        ax.plot(f_env, env_norm, color=color_env, lw=2.0,
+                alpha=0.85, label="Envolvente espectral", zorder=3)
 
     # ── Ejes ───────────────────────────────────────────────────────────
     ax.set_xlim(0, 4500)
-    ax.set_ylim(-0.05, 1.10)
+    ax.set_ylim(-0.05, 1.20)
     ax.set_xlabel("Frecuencia (Hz)", fontsize=8)
     ax.set_ylabel("Magnitud normalizada", fontsize=8)
     ax.set_title(nombre, fontsize=9, fontweight="bold")
-    ax.legend(fontsize=8, loc="upper right")
+    ax.legend(fontsize=7, loc="upper right", ncol=2)
     ax.grid(True, alpha=0.3)
 
     return formantes
+
+
+def _graficar_panel_un_periodo(ax, freqs, Y, f0_hz, nombre, color_espectro,
+                               color_env, color_fmt, formantes_ref=None):
+    """
+    Panel especial para el caso de UN SOLO PERÍODO.
+    La envolvente se calcula con Savitzky-Golay directamente sobre el
+    espectro normalizado, con ventana adaptada a F0. Con tan pocos puntos
+    (~10-30 bins) esto es más estable que cualquier interpolación.
+    No muestra puntos de formantes estimados — solo la curva suave.
+    """
+    from scipy.signal import savgol_filter, find_peaks
+
+    Y_norm = Y / (Y.max() + 1e-10)
+    mask_plot = freqs <= 4500
+    ax.plot(freqs[mask_plot], Y_norm[mask_plot],
+            color=color_espectro, lw=1.2, alpha=0.6, label="Espectro")
+
+    # Savitzky-Golay sobre el espectro completo (no solo el rango de formantes)
+    resol = freqs[1] - freqs[0] if len(freqs) > 1 else f0_hz
+    # Ventana ≈ 3×F0 en Hz — suficiente para suavizar armónicos consecutivos
+    win = max(5, int(3.0 * f0_hz / resol))
+    if win % 2 == 0:
+        win += 1
+    win = min(win, len(Y_norm[mask_plot]) - 2)
+    if win % 2 == 0:
+        win -= 1
+
+    Y_plot = Y_norm[mask_plot]
+    f_plot = freqs[mask_plot]
+
+    if win >= 3:
+        env = savgol_filter(Y_plot, window_length=win, polyorder=3)
+        env = np.clip(env, 0, None)
+        ax.plot(f_plot, env, color=color_env, lw=2.2,
+                alpha=0.9, label="Envolvente espectral", zorder=3)
+
+    ax.set_xlim(0, 4500)
+    ax.set_ylim(-0.05, 1.20)
+    ax.set_xlabel("Frecuencia (Hz)", fontsize=8)
+    ax.set_ylabel("Magnitud normalizada", fontsize=8)
+    ax.set_title(nombre, fontsize=9, fontweight="bold")
+    ax.legend(fontsize=7, loc="upper right", ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    return []
 
 
 def punto3(ruta_lenta, ruta_rapida):
@@ -406,6 +491,10 @@ def punto3(ruta_lenta, ruta_rapida):
     for i, (vl, vr) in enumerate(zip(VOCALES_LENTA, VOCALES_RAPIDA)):
         nombre_vocal = vl["nombre"].replace("Vocal ", "")
 
+        # Buscar formantes de referencia del cuadro para esta vocal
+        ref_lenta  = FORMANTES_REF.get(nombre_vocal, {}).get("lenta",  None)
+        ref_rapida = FORMANTES_REF.get(nombre_vocal, {}).get("rapida", None)
+
         # — Lenta —
         freqs_l, Y_l = fft_segmento(señal_l, fs_l, vl["t_ini"], vl["t_fin"])
         fmts_l = _graficar_un_panel(
@@ -414,6 +503,8 @@ def punto3(ruta_lenta, ruta_rapida):
             color_espectro=COLORS["fft_multi"],
             color_env="#1565C0",
             color_fmt="#0D47A1",
+            mostrar_formantes=False,
+            formantes_ref=None,
         )
         # — Rápida —
         freqs_r, Y_r = fft_segmento(señal_r, fs_r, vr["t_ini"], vr["t_fin"])
@@ -423,6 +514,8 @@ def punto3(ruta_lenta, ruta_rapida):
             color_espectro=COLORS["fft_one"],
             color_env="#B71C1C",
             color_fmt="#7F0000",
+            mostrar_formantes=False,
+            formantes_ref=None,
         )
 
 
@@ -458,6 +551,8 @@ def punto3(ruta_lenta, ruta_rapida):
         f0 = f0_lenta[i]
         T0 = 1.0 / f0
 
+        ref_lenta = FORMANTES_REF.get(nombre_vocal, {}).get("lenta", None)
+
         # Varios períodos
         freqs_m, Y_m = fft_segmento(señal_l, fs_l, vl["t_ini"], vl["t_fin"])
         dur_ms = (vl["t_fin"] - vl["t_ini"]) * 1000
@@ -477,7 +572,6 @@ def punto3(ruta_lenta, ruta_rapida):
             color_espectro=COLORS["fft_one"],
             color_env="#E65100",
             color_fmt="#BF360C",
-            mostrar_formantes=True,
         )
         # Imprimir comparación en consola
         fmts_multi_str = [f"F{k+1}={fv:.0f}" for k, (fv, _) in enumerate(
@@ -515,6 +609,8 @@ def punto3(ruta_lenta, ruta_rapida):
         f0 = f0_rapida[i]
         T0 = 1.0 / f0
 
+        ref_rapida = FORMANTES_REF.get(nombre_vocal, {}).get("rapida", None)
+
         # Varios períodos
         freqs_m, Y_m = fft_segmento(señal_r, fs_r, vr["t_ini"], vr["t_fin"])
         dur_ms = (vr["t_fin"] - vr["t_ini"]) * 1000
@@ -534,7 +630,6 @@ def punto3(ruta_lenta, ruta_rapida):
             color_espectro=COLORS["fft_one"],
             color_env="#E65100",
             color_fmt="#BF360C",
-            mostrar_formantes=True,
         )
         # Imprimir comparación en consola
         fmts_multi_str = [f"F{k+1}={fv:.0f}" for k, (fv, _) in enumerate(

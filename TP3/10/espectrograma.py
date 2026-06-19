@@ -142,7 +142,7 @@ VOCALES_RAPIDA = [
 if __name__ == "__main__":
     #plot_espectrograma("lapachos_lento_decimada.wav",  "ancha decimada",   "LAPACHOS decimado (lento)")
 
-    plot_espectrograma("lapachos_rapida_a_lenta_tfct_manual.wav", "ancha",   "LAPACHOS phase vocoder(rapida a lenta)")
+    plot_espectrograma("lapachos_rapido_a_superrapido_tfct.wav", "ancha",   "LAPACHOS phase vocoder(rapido)")
 
     # Ejemplo con segmento y nombre descriptivo
     # plot_espectrograma("lapachos_lento.wav", "angosta", "Vocal [a]", rango_t=[0.5, 1.2])

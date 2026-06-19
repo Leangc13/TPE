@@ -42,7 +42,7 @@ def aumentar_velocidad_tfct(archivo_entrada, archivo_salida):
 # ==========================================
 # EJECUCIÓN
 # ==========================================
-archivo_in = 'lapachos_lento.wav'
-archivo_out = 'lapachos_lenta_a_rapida_tfct.wav'
+archivo_in = 'lapachos_rapido.wav'
+archivo_out = 'lapachos_rapido_a_superrapido_tfct.wav'
 
 aumentar_velocidad_tfct(archivo_in, archivo_out)

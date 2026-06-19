@@ -35,7 +35,7 @@ def disminuir_velocidad_tfct(archivo_entrada, archivo_salida):
 # ==========================================
 # EJECUCIÓN
 # ==========================================
-archivo_in = 'lapachos_rapido.wav'
-archivo_out = 'lapachos_lenta_tfct_manual.wav'
+archivo_in = 'lapachos_lento.wav'
+archivo_out = 'lapachos_lento_a_superlento_tfct_manual.wav'
 
 disminuir_velocidad_tfct(archivo_in, archivo_out)
